@@ -27,7 +27,7 @@ Normally, the rate is modeled as the amount
 rate_constant*num_of_susceptible_people*num_of_infected_people
 ```
 
-The `rate_constant` is determined by other factors like the type of the disease.
+The `rate_constant` is determined by factors like the type of the disease.
 It can be interpreted as the probability per time one pair of susceptible and
 infected people encounter each other, with the susceptible person becoming sick.
 The overall rate (i.e. probability per time) that some susceptible person gets
@@ -173,7 +173,7 @@ For example, we can use `saveat=0.5` to save at an evenly spaced grid:
 sol = solve(jump_prob,FunctionMap(),saveat=0.5)
 ```
 
-## Defining the Jumps Directly: ConstantRateJump
+## Defining the Jumps Directly: `ConstantRateJump`
 
 Instead of using the biological modeling functionality of `@reaction_network`, we can
 directly define jumps. This allows for more general types of rates, at the cost
@@ -216,18 +216,18 @@ advantageous to use a different internal representation for the jump collection.
 For such systems it is recommended to use `DirectFW()`, which should offer
 better performance than `Direct()`.
 
-## Defining the Jumps Directly: MassActionJump
+## Defining the Jumps Directly: `MassActionJump`
 For systems that can be represented as mass action reactions, a further
 specialization of the jump type is possible that offers improved computational
 performance; `MasssActionJump`. Suppose the system has ``N`` chemical species
 ``\{S_1,\dots,S_N\}``. A general mass action reaction has the form
 
 ```math
-R_1 S_1 + R_2 S_2 \dots R_N S_N \overset{k}{\rightarrow} P_1 S_1 + P_2 S_2 + \dots P_N S_N
+R_1 S_1 + R_2 S_2 + \dots + R_N S_N \overset{k}{\rightarrow} P_1 S_1 + P_2 S_2 + \dots + P_N S_N
 ```
-where the non-negative integers ``(R_1,\dots,R_N\)`` denote the *reactant
+where the non-negative integers ``(R_1,\dots,R_N)`` denote the *reactant
 stoichiometry* of the reaction, and the non-negative integers
-``(P_1,\dots,\P_N)`` the *product stoichiometry*. The *net stoichiometry* is
+``(P_1,\dots,P_N)`` the *product stoichiometry*. The *net stoichiometry* is
 the net change in each chemical species from the reaction occurring one time,
 given by ``(P_1-R_1,\dots,P_N-R_N)``.
 
@@ -238,8 +238,64 @@ stoichiometry `(-1,1,0)`. The second reaction has rate `c2`, reactant
 stoichiometry `(0,1,0)`, product stoichiometry `(0,0,1)`, and net stoichiometry
 `(0,-1,1)`.
 
+We can encode this system as a mass action jump by specifying the rates, reactant
+stoichiometry, and the net stoichiometry as follows:
+```julia
+rates = [0.1/1000, 0.01]    # i.e. [c1,c2]
+reactant_stoich = 
+[
+  [1 => 1, 2 => 1],         # 1*s and 1*i
+  [2 => 1]                  # 1*i
+]
+net_stoich = 
+[
+  [1 => -1, 2 => 1],         # -1*s and 1*i
+  [2 => -1, 3 => 1]         # -1*i and 1*r
+]
+mass_act_jump = MassActionJump(rates, reactant_stoich, net_stoich)
+```
+Just like for `ConstantRateJumps`, to then simulate the system we create
+a `JumpProblem` and call `solve`:
+```julia
+jump_prob = JumpProblem(prob, Direct(), mass_act_jump)
+sol = solve(jump_prob, SSAStepper())
+```
+
 
 ## Defining the Jumps Directly: Mixing ConstantJump and MassActionJump
+Suppose we now want to add in to the SIR model another jump that can not be
+represented as a mass action reaction. We can create a new `ConstantRateJump`
+and simulate a hybrid system using both the `MassActionJump` for the two
+previous reactions, and the new `ConstantRateJump`. Let's suppose we want to let
+susceptible people be born with the following jump rate:
+```julia
+birth_rate(u,p,t) = 10.*u[1]/(200. + u[1]) + 10.
+function birth_affect!(integrator)
+  integrator.u[1] += 1
+end
+birth_jump = ConstantRateJump(birth_rate, birth_affect!)
+```
+We can then simulate the hybrid system as
+```julia
+jump_prob = JumpProblem(prob, Direct(), mass_act_jump, birth_jump)
+sol = solve(jump_prob, SSAStepper())
+```
+![gillespie_hybrid_jumps](../assets/gillespie_hybrid_jumps.png)
+
+### Caution about `MassActionJump`s
+When using `MassActionJump` the default behavior is to assume rate constants
+correspond to stochastic rate constants in the sense used by Gillespie (J. Comp.
+Phys., 1976, 22 (4)). This means that for a reaction such as
+``2A \overset{k}{\rightarrow} B``, the jump rate function constructed by
+`MassActionJump` would be `k*A*(A-1)/2!`. For a trimolecular reaction like ``3A
+\overset{k}{\rightarrow} B`` the rate function would be `k*A*(A-1)*(A-2)/3!`. To avoiding
+having the reaction rates rescaled (by `1/2` and `1/6` for these two examples),
+one can pass the `MassActionJump` constructor the optional named parameter
+`scale_rates=false`, i.e. use
+```julia
+mass_act_jump = MassActionJump(rates, reactant_stoich, net_stoich; scale_rates = false)
+```
+
 
 ## Adding Jumps to a Differential Equation
 
@@ -256,12 +312,13 @@ end
 prob = ODEProblem(f,[999.0,1.0,0.0,100.0],(0.0,250.0))
 ```
 
-Notice we gave the 4th component a starting value of 100. The same steps as above
-will thus solve this hybrid equation. For example, we can solve it using the
-`Tsit5()` method via:
+Notice we gave the 4th component a starting value of 100. The same steps as
+above will allow us to solve this hybrid equation when using
+`ConstantRateJumps`. For example, we can solve it using the `Tsit5()` method
+via:
 
 ```julia
-jump_prob = GillespieProblem(prob,Direct(),r1,r2)
+jump_prob = JumpProblem(prob,Direct(),jump,jump2)
 sol = solve(jump_prob,Tsit5())
 ```
 
